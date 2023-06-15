@@ -9,7 +9,7 @@ use Google\Service\Sheets\BatchUpdateSpreadsheetRequest;
 use Google\Service\Sheets\ValueRange;
 use Google\Service\Sheets\BatchUpdateValuesRequest;
 
-$spreadsheetId = '1oL-uzjeC75D4ubK2vSkNLoPurkrfoGCOhdspxuqUakg';
+$spreadsheetId = $_GET['spreadsheet_id'];
 
 function getInput(): array {
     $input[] = $_GET['param1'];
