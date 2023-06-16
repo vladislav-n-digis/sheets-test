@@ -11,7 +11,24 @@ use Google\Service\Sheets\BatchUpdateValuesRequest;
 
 $spreadsheetId = $_GET['spreadsheet_id'];
 
-function getInput(): array {
+$input = getInput();
+$firstColumnValue = $input[0];
+
+$spreadsheetService = initSpreadsheetsService();
+
+try {
+    $parser = new SpreadsheetValuesParser($spreadsheetId, $spreadsheetService);
+    $numberPosition = $parser->getPositionOfNumber($firstColumnValue);
+
+    $operator = new SpreadsheetOperations($spreadsheetId, $spreadsheetService, $numberPosition);
+    $operator->insertEmptyRowInPostion();
+    $operator->insertDataInEmptyRow($input);
+} catch (Exception $exception) {
+    printf($exception->getMessage());
+}
+
+function getInput(): array
+{
     $input[] = $_GET['param1'];
     $input[] = $_GET['param2'];
     $input[] = $_GET['param3'];
@@ -19,7 +36,8 @@ function getInput(): array {
     return $input;
 }
 
-function initService(): Sheets {
+function initSpreadsheetsService(): Sheets
+{
     $path = 'sheets-credentials.json';
 
     $client = new \Google\Client();
@@ -31,102 +49,133 @@ function initService(): Sheets {
     return new Sheets($client);
 }
 
-function getFirstColumnValues(string $spreadsheetId, Sheets $service): array 
+class SpreadsheetValuesParser
 {
-    $range = 'Sheet1!A:A';
-    $response = $service->spreadsheets_values->get($spreadsheetId, $range);
-    (array) $values = $response->getValues();
+    public Sheets $service;
+    public string $spreadsheetId;
 
-    return $values;
-}
-
-function removeInsideArrayOfValues(array $values): array 
-{
-    foreach ($values as $id => $value) {
-        $values[$id] = $value[0];
+    public function __construct(string $spreadsheetId, Sheets $service)
+    {
+        $this->spreadsheetId = $spreadsheetId;
+        $this->service = $service;
     }
 
-    return $values;
+    public function getPositionOfNumber(int $number): int
+    {
+        $firstColumnValues = $this->getFirstColumnValues($this->spreadsheetId, $this->service);
+        $firstColumnValues = $this->removeInsideArrayOfValues($firstColumnValues);
+        $numberPosition = $this->getPositionOfNumberInSortedArray($firstColumnValues, $number);
+
+        return $numberPosition;
+    }
+
+    public function getFirstColumnValues(): array
+    {
+        $range = 'Sheet1!A:A';
+        $response = $this->service->spreadsheets_values->get($this->spreadsheetId, $range);
+        (array) $values = $response->getValues();
+
+        if (count($values) == 0) {
+            throw new Exception('No values in return of getFirstColumnValues method!');
+        }
+
+        return $values;
+    }
+
+    private function removeInsideArrayOfValues(array $values): array
+    {
+        foreach ($values as $id => $value) {
+            $values[$id] = $value[0];
+        }
+
+        return $values;
+    }
+
+    private function getPositionOfNumberInSortedArray(array $array, int $number): int
+    {
+        $low = 0;
+        $high = count($array) - 1;
+
+        while ($low <= $high) {
+            $mid = (int)(($low + $high) / 2);
+
+            if ($array[$mid] == $number) {
+                return $array;
+            } elseif ($array[$mid] < $number) {
+                $low = $mid + 1;
+            } else {
+                $high = $mid - 1;
+            }
+        }
+
+        array_splice($array, $low, 0, $number);
+        return $low;
+    }
 }
 
-function getPositionOfNumberInSortedArray(array $array, int $number): int 
+class SpreadsheetOperations
 {
-    $low = 0;
-    $high = count($array) - 1;
+    public string $spreadsheetId;
+    public Sheets $service;
+    public int $numberPosition;
 
-    while ($low <= $high) {
-        $mid = (int)(($low + $high) / 2);
+    public function __construct(string $spreadsheetId, Sheets $service, int $numberPosition)
+    {
+        $this->spreadsheetId = $spreadsheetId;
+        $this->service = $service;
+        $this->numberPosition = $numberPosition;
+    }
 
-        if ($array[$mid] == $number) {
-            return $array;
-        } elseif ($array[$mid] < $number) {
-            $low = $mid + 1;
+    public function insertEmptyRowInPostion(): void
+    {
+        $insertRequest = new Request();
+        $insertRequest->setInsertDimension(new InsertDimensionRequest([
+            'range' => [
+                'sheetId' => 0,  // First sheet
+                'dimension' => 'ROWS',
+                'startIndex' => $this->numberPosition,
+                'endIndex' => $this->numberPosition + 1,
+            ],
+            'inheritFromBefore' => false,
+        ]));
+
+        $batchUpdateRequest = new BatchUpdateSpreadsheetRequest([
+            'requests' => [$insertRequest],
+        ]);
+
+        $response = $this->service->spreadsheets->batchUpdate($this->spreadsheetId, $batchUpdateRequest);
+
+        if ($response instanceof \Google\Service\Exception) {
+            $error = $response->getErrors()[0];
+            throw new Exception($error['message']);
         } else {
-            $high = $mid - 1;
+            printf("New dimension inserted successfully.\n");
         }
     }
 
-    array_splice($array, $low, 0, $number);
-    return $low;
-}
+    public function insertDataInEmptyRow(array $input): void
+    {
+        $range = 'Sheet1!A' . $this->numberPosition + 1 . ':C' . $this->numberPosition + 1;
 
-function insertEmptyRowInPostion(int $numberPosition, Sheets $service, string $spreadsheetId): void
-{
-    $insertRequest = new Request();
-    $insertRequest->setInsertDimension(new InsertDimensionRequest([
-        'range' => [
-            'sheetId' => 0,  // First sheet
-            'dimension' => 'ROWS',
-            'startIndex' => $numberPosition,
-            'endIndex' => $numberPosition + 1,
-        ],
-        'inheritFromBefore' => false,
-    ]));
+        $updateValues = new ValueRange([
+            'range' => $range,
+            'values' => [
+                $input
+            ]
+        ]);
 
-    $batchUpdateRequest = new BatchUpdateSpreadsheetRequest([
-        'requests' => [$insertRequest],
-    ]);
+        $batchUpdateRequest = new BatchUpdateValuesRequest([
+            'data' => [$updateValues],
+            'valueInputOption' => 'USER_ENTERED',
+        ]);
 
-    $response = $service->spreadsheets->batchUpdate($spreadsheetId, $batchUpdateRequest);
+        $response = $this->service->spreadsheets_values->batchUpdate($this->spreadsheetId, $batchUpdateRequest);
 
-    if ($response instanceof \Google\Service\Exception) {
-        $error = $response->getErrors()[0];
-        printf("Error: %s - %s\n", $error['code'], $error['message']);
-    } else {
-        printf("New dimension inserted successfully.\n");
+        if ($response instanceof \Google\Service\Exception) {
+            $error = $response->getErrors()[0];
+            throw new Exception($error['message']);
+        } else {
+            printf("Cells updated successfully.\n");
+        }
     }
 }
-
-function insertDataInEmptyRow(int $numberPosition, array $input, Sheets $service, string $spreadsheetId): void
-{
-    $range = 'Sheet1!A' . $numberPosition + 1 . ':C' . $numberPosition + 1;
-
-    $updateValues = new ValueRange([
-        'range' => $range,
-        'values' => [
-            $input
-        ]
-    ]);
-
-    $batchUpdateRequest = new BatchUpdateValuesRequest([
-        'data' => [$updateValues],
-        'valueInputOption' => 'USER_ENTERED',
-    ]);
-
-    $response = $service->spreadsheets_values->batchUpdate($spreadsheetId, $batchUpdateRequest);
-
-    if ($response instanceof \Google\Service\Exception) {
-        $error = $response->getErrors()[0];
-        printf("Error: %s - %s\n", $error['code'], $error['message']);
-    } else {
-        printf("Cells updated successfully.\n");
-    }
-}
-
-$input = getInput();
-$service = initService();
-$firstColumnValues = getFirstColumnValues($spreadsheetId, $service);
-$firstColumnValues = removeInsideArrayOfValues($firstColumnValues);
-$numberPosition = getPositionOfNumberInSortedArray($firstColumnValues, $input[0]);
-insertEmptyRowInPostion($numberPosition, $service, $spreadsheetId);
-insertDataInEmptyRow($numberPosition, $input, $service, $spreadsheetId);
